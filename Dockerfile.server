@@ -1,0 +1,12 @@
+FROM openjdk:latest
+
+WORKDIR /app
+
+# Copy Java source code files
+COPY . /app
+
+# Compile Java files
+RUN javac *.java
+
+# Start the RMI server
+CMD ["java", "KeyValueStoreServer"]
