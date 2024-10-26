@@ -6,8 +6,6 @@ This project is a multi-threaded key-value store implemented using Remote Proced
 ## System Requirements
 - **Java Development Kit (JDK)**: Version 11 or higher
 - **Docker**: Version 20.10 or higher (for containerizing server and client components)
-- **Git**: To clone the repository
-- **Internet Connection**: To download necessary images and packages
 
 ## Getting Started
 Follow these steps to get the project up and running on your system:
