@@ -4,24 +4,27 @@ import java.rmi.registry.Registry;
 import java.rmi.server.UnicastRemoteObject;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class KeyValueStoreServer extends UnicastRemoteObject implements KeyValueStore {
     private static final LoggerUtility logger = new LoggerUtility();
     private final Map<String, String> store;
     private final ReentrantLock lock;
+    private final ExecutorService threadPool;
 
     protected KeyValueStoreServer() throws RemoteException {
         super();
         this.store = new ConcurrentHashMap<>();
-        this.lock = new ReentrantLock();
+        this.lock = new ReentrantLock(true);
+        this.threadPool = Executors.newFixedThreadPool(10);  // Create a thread pool with 10 threads
     }
 
     @Override
     public String get(String key) throws RemoteException {
         logger.info("Received GET request for key: " + key);
         try {
-            lock.lock();
             if (store.containsKey(key)) {
                 String value = store.get(key);
                 logger.info("GET success for key: " + key + " -> Value: " + value);
@@ -30,8 +33,9 @@ public class KeyValueStoreServer extends UnicastRemoteObject implements KeyValue
                 logger.info("GET failed for key: " + key + " - Key not found");
                 return "Error: Key not found";
             }
-        } finally {
-            lock.unlock();
+        } catch (Exception e) {
+            logger.info("Exception during GET request: " + e.toString());
+            throw new RemoteException("Exception during GET request", e);
         }
     }
 
@@ -39,12 +43,12 @@ public class KeyValueStoreServer extends UnicastRemoteObject implements KeyValue
     public String put(String key, String value) throws RemoteException {
         logger.info("Received PUT request for key: " + key + " with value: " + value);
         try {
-            lock.lock();
+            lock.lock();  // Lock for write operations
             store.put(key, value);
             logger.info("PUT success for key: " + key + " with value: " + value);
             return "Success: Key " + key + " added/updated";
-        } finally {
-            lock.unlock();
+        }finally {
+            lock.unlock();  // Unlock after the write operation
         }
     }
 
@@ -52,7 +56,7 @@ public class KeyValueStoreServer extends UnicastRemoteObject implements KeyValue
     public String delete(String key) throws RemoteException {
         logger.info("Received DELETE request for key: " + key);
         try {
-            lock.lock();
+            lock.lock();  // Lock for delete operations
             if (store.remove(key) != null) {
                 logger.info("DELETE success for key: " + key);
                 return "Success: Key " + key + " removed";
@@ -61,7 +65,7 @@ public class KeyValueStoreServer extends UnicastRemoteObject implements KeyValue
                 return "Error: Key not found";
             }
         } finally {
-            lock.unlock();
+            lock.unlock();  // Unlock after the delete operation
         }
     }
 
@@ -80,8 +84,15 @@ public class KeyValueStoreServer extends UnicastRemoteObject implements KeyValue
                 logger.info("Using existing RMI registry on port 1099.");
             }
 
+            // Bind the remote object
             registry.rebind("KeyValueStore", keyValueStore);
             logger.info("Server is ready.");
+
+            // Shutdown hook for the server
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                logger.info("Shutting down server...");
+                keyValueStore.threadPool.shutdown();
+            }));
 
         } catch (Exception e) {
             logger.info("Server exception: " + e.toString());
