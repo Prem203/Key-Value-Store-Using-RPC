@@ -11,4 +11,4 @@ COPY . /app
 RUN javac *.java
 
 # Specify the command to run the client
-CMD ["java", "KeyValueStoreClient", "kv_server", "1099"]
+CMD ["java", "KeyValueStoreClient"]

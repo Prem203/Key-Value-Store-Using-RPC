@@ -1,13 +1,20 @@
 import java.rmi.registry.LocateRegistry;
 import java.rmi.registry.Registry;
+import java.util.Random;
 
 public class KeyValueStoreClient {
     private static final LoggerUtility logger = new LoggerUtility();
+    private static final int TOTAL_REPLICAS = 5; // Total number of replicas
 
     public static void main(String[] args) {
         try {
-            // Connect to the server registry
-            Registry registry = LocateRegistry.getRegistry("kv_server", 1099);
+            // Randomly select a replica to connect to
+            int replicaId = new Random().nextInt(TOTAL_REPLICAS);
+            String serverHost = "kv_server_" + replicaId; // Assuming hostnames are kv_server_0, kv_server_1, etc.
+            logger.info("Connecting to replica: " + serverHost);
+
+            // Connect to the selected replica
+            Registry registry = LocateRegistry.getRegistry(serverHost, 1099);
             KeyValueStore keyValueStore = (KeyValueStore) registry.lookup("KeyValueStore");
 
             // Pre-populate the store with initial key-value pairs

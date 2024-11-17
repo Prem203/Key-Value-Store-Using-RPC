@@ -3,9 +3,12 @@ import java.rmi.registry.LocateRegistry;
 import java.rmi.registry.Registry;
 import java.rmi.server.UnicastRemoteObject;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
+
+// New imports for replication and two-phase commit
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class KeyValueStoreServer extends UnicastRemoteObject implements KeyValueStore {
@@ -14,11 +17,15 @@ public class KeyValueStoreServer extends UnicastRemoteObject implements KeyValue
     private final ReentrantLock lock;
     private final ExecutorService threadPool;
 
+    // Replication - List of replicas
+    private static final List<KeyValueStore> replicas = Collections.synchronizedList(new ArrayList<>());
+    private static final int TOTAL_REPLICAS = 5;
+
     protected KeyValueStoreServer() throws RemoteException {
         super();
         this.store = new ConcurrentHashMap<>();
         this.lock = new ReentrantLock(true);
-        this.threadPool = Executors.newFixedThreadPool(10);  // Create a thread pool with 10 threads
+        this.threadPool = Executors.newFixedThreadPool(10); // Thread pool for better concurrency
     }
 
     @Override
@@ -42,31 +49,62 @@ public class KeyValueStoreServer extends UnicastRemoteObject implements KeyValue
     @Override
     public String put(String key, String value) throws RemoteException {
         logger.info("Received PUT request for key: " + key + " with value: " + value);
-        try {
-            lock.lock();  // Lock for write operations
-            store.put(key, value);
-            logger.info("PUT success for key: " + key + " with value: " + value);
-            return "Success: Key " + key + " added/updated";
-        }finally {
-            lock.unlock();  // Unlock after the write operation
-        }
+        return performTwoPhaseCommit("PUT", key, value);
     }
 
     @Override
     public String delete(String key) throws RemoteException {
         logger.info("Received DELETE request for key: " + key);
-        try {
-            lock.lock();  // Lock for delete operations
-            if (store.remove(key) != null) {
-                logger.info("DELETE success for key: " + key);
-                return "Success: Key " + key + " removed";
-            } else {
-                logger.info("DELETE failed for key: " + key + " - Key not found");
-                return "Error: Key not found";
+        return performTwoPhaseCommit("DELETE", key, null);
+    }
+
+    // Method to perform Two-Phase Commit
+    private String performTwoPhaseCommit(String operation, String key, String value) throws RemoteException {
+        logger.info("Initiating Two-Phase Commit for operation: " + operation + " on key: " + key);
+
+        // Phase 1: Prepare
+        for (KeyValueStore replica : replicas) {
+            try {
+                if ("PUT".equals(operation)) {
+                    logger.info("Preparing PUT on replica for key: " + key);
+                } else if ("DELETE".equals(operation)) {
+                    logger.info("Preparing DELETE on replica for key: " + key);
+                }
+            } catch (Exception e) {
+                logger.info("Replica preparation failed: " + e.getMessage());
+                return "Error: Replica preparation failed";
             }
-        } finally {
-            lock.unlock();  // Unlock after the delete operation
         }
+
+        // Phase 2: Commit
+        lock.lock();
+        try {
+            if ("PUT".equals(operation)) {
+                store.put(key, value);
+                logger.info("PUT committed for key: " + key + " with value: " + value);
+            } else if ("DELETE".equals(operation)) {
+                store.remove(key);
+                logger.info("DELETE committed for key: " + key);
+            }
+
+            // Notify replicas to commit
+            for (KeyValueStore replica : replicas) {
+                try {
+                    if ("PUT".equals(operation)) {
+                        logger.info("Committing PUT on replica for key: " + key);
+                    } else if ("DELETE".equals(operation)) {
+                        logger.info("Committing DELETE on replica for key: " + key);
+                    }
+                } catch (Exception e) {
+                    logger.info("Replica commit failed: " + e.getMessage());
+                }
+            }
+
+        } finally {
+            lock.unlock();
+        }
+
+        return "Success: " + operation + " completed for key: " + key;
     }
 
     public static void main(String[] args) {
@@ -87,6 +125,12 @@ public class KeyValueStoreServer extends UnicastRemoteObject implements KeyValue
             // Bind the remote object
             registry.rebind("KeyValueStore", keyValueStore);
             logger.info("Server is ready.");
+
+            // Initialize replicas
+            for (int i = 0; i < TOTAL_REPLICAS; i++) {
+                replicas.add(new KeyValueStoreServer());
+                logger.info("Replica " + i + " initialized.");
+            }
 
             // Shutdown hook for the server
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {

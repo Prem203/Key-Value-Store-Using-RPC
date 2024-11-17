@@ -1,0 +1,70 @@
+services:
+  # 5 Key-Value Store Server replicas
+  kv_server_0:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: kv_server_0
+    command: ["java", "KeyValueStoreServer"]
+    ports:
+      - "10990:1099"
+    networks:
+      - kv_network
+
+  kv_server_1:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: kv_server_1
+    command: ["java", "KeyValueStoreServer"]
+    ports:
+      - "10991:1099"
+    networks:
+      - kv_network
+
+  kv_server_2:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: kv_server_2
+    command: ["java", "KeyValueStoreServer"]
+    ports:
+      - "10992:1099"
+    networks:
+      - kv_network
+
+  kv_server_3:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: kv_server_3
+    command: ["java", "KeyValueStoreServer"]
+    ports:
+      - "10993:1099"
+    networks:
+      - kv_network
+
+  kv_server_4:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: kv_server_4
+    command: ["java", "KeyValueStoreServer"]
+    ports:
+      - "10994:1099"
+    networks:
+      - kv_network
+
+  # Key-Value Store Client
+  kv_client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: kv_client
+    command: ["java", "KeyValueStoreClient"]
+    networks:
+      - kv_network
+
+networks:
+  kv_network:
+    driver: bridge
