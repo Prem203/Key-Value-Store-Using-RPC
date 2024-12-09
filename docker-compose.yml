@@ -1,69 +1,90 @@
+version: "3.8"
+
 services:
-  # 5 Key-Value Store Server replicas
-  kv_server_0:
+  server_1:
     build:
       context: .
       dockerfile: Dockerfile.server
-    container_name: kv_server_0
-    command: ["java", "KeyValueStoreServer"]
-    ports:
-      - "10990:1099"
+    container_name: server_1
+    environment:
+      - PORT=5010
+      - SERVER_ID=1
+      - REPLICAS=server_2:5011,server_3:5012,server_4:5013,server_5:5014
     networks:
-      - kv_network
+      kv_network:
+        aliases:
+          - server_1
 
-  kv_server_1:
+  server_2:
     build:
       context: .
       dockerfile: Dockerfile.server
-    container_name: kv_server_1
-    command: ["java", "KeyValueStoreServer"]
-    ports:
-      - "10991:1099"
+    container_name: server_2
+    environment:
+      - PORT=5011
+      - SERVER_ID=2
+      - REPLICAS=server_1:5010,server_3:5012,server_4:5013,server_5:5014
     networks:
-      - kv_network
+      kv_network:
+        aliases:
+          - server_2
 
-  kv_server_2:
+  server_3:
     build:
       context: .
       dockerfile: Dockerfile.server
-    container_name: kv_server_2
-    command: ["java", "KeyValueStoreServer"]
-    ports:
-      - "10992:1099"
+    container_name: server_3
+    environment:
+      - PORT=5012
+      - SERVER_ID=3
+      - REPLICAS=server_1:5010,server_2:5011,server_4:5013,server_5:5014
     networks:
-      - kv_network
+      kv_network:
+        aliases:
+          - server_3
 
-  kv_server_3:
+  server_4:
     build:
       context: .
       dockerfile: Dockerfile.server
-    container_name: kv_server_3
-    command: ["java", "KeyValueStoreServer"]
-    ports:
-      - "10993:1099"
+    container_name: server_4
+    environment:
+      - PORT=5013
+      - SERVER_ID=4
+      - REPLICAS=server_1:5010,server_2:5011,server_3:5012,server_5:5014
     networks:
-      - kv_network
+      kv_network:
+        aliases:
+          - server_4
 
-  kv_server_4:
+  server_5:
     build:
       context: .
       dockerfile: Dockerfile.server
-    container_name: kv_server_4
-    command: ["java", "KeyValueStoreServer"]
-    ports:
-      - "10994:1099"
+    container_name: server_5
+    environment:
+      - PORT=5014
+      - SERVER_ID=5
+      - REPLICAS=server_1:5010,server_2:5011,server_3:5012,server_4:5013
     networks:
-      - kv_network
+      kv_network:
+        aliases:
+          - server_5
 
-  # Key-Value Store Client
   kv_client:
     build:
       context: .
       dockerfile: Dockerfile.client
     container_name: kv_client
-    command: ["java", "KeyValueStoreClient"]
+    environment:
+      - SERVER_HOST=server_1
+      - SERVER_PORT=5010
+    depends_on:
+      - server_1
     networks:
-      - kv_network
+      kv_network:
+        aliases:
+          - kv_client
 
 networks:
   kv_network:

@@ -1,69 +1,75 @@
-import java.rmi.registry.LocateRegistry;
-import java.rmi.registry.Registry;
-import java.util.Random;
+import java.rmi.*;
+import java.rmi.registry.*;
 
 public class KeyValueStoreClient {
-    private static final LoggerUtility logger = new LoggerUtility();
-    private static final int TOTAL_REPLICAS = 5; // Total number of replicas
+    private final KeyValueStoreInterface server;
+
+    public KeyValueStoreClient(String host, int port) throws Exception {
+        Registry registry = LocateRegistry.getRegistry(host, port);
+        this.server = (KeyValueStoreInterface) registry.lookup("KeyValueStore");
+    }
+
+    public void testOperations() throws RemoteException {
+    String[][] data = {
+        {"Name", "Alice"},
+        {"Age", "30"},
+        {"City", "New York"},
+        {"Course", "Distributed Systems"},
+        {"Hobby", "Cycling"},
+    };
+
+    System.out.println("Performing 5 PUT operations...");
+    for (String[] entry : data) {
+        try {
+            boolean putResult = server.put(entry[0], entry[1]);
+            System.out.println("PUT " + entry[0] + ": " + entry[1] + " -> " + (putResult ? "Succeeded" : "Failed"));
+        } catch (RemoteException e) {
+            System.err.println("PUT operation failed for key: " + entry[0] + ". Error: " + e.getMessage());
+        }
+    }
+
+    System.out.println("\nPerforming 5 GET operations...");
+    for (String[] entry : data) {
+        try {
+            String value = server.get(entry[0]);
+            System.out.println("GET " + entry[0] + ": " + (value != null ? value : "Key not found"));
+        } catch (RemoteException e) {
+            System.err.println("GET operation failed for key: " + entry[0] + ". Error: " + e.getMessage());
+        }
+    }
+
+    System.out.println("\nPerforming 5 DELETE operations...");
+    for (String[] entry : data) {
+        try {
+            boolean deleteResult = server.delete(entry[0]);
+            System.out.println("DELETE " + entry[0] + ": " + (deleteResult ? "Succeeded" : "Failed"));
+        } catch (RemoteException e) {
+            System.err.println("DELETE operation failed for key: " + entry[0] + ". Error: " + e.getMessage());
+        }
+    }
+
+    System.out.println("\nAll operations completed.");
+}
+
 
     public static void main(String[] args) {
-        try {
-            // Randomly select a replica to connect to
-            int replicaId = new Random().nextInt(TOTAL_REPLICAS);
-            String serverHost = "kv_server_" + replicaId; // Assuming hostnames are kv_server_0, kv_server_1, etc.
-            logger.info("Connecting to replica: " + serverHost);
+    try {
+        String host = System.getenv("SERVER_HOST");
+        int port = Integer.parseInt(System.getenv("SERVER_PORT"));
 
-            // Connect to the selected replica
-            Registry registry = LocateRegistry.getRegistry(serverHost, 1099);
-            KeyValueStore keyValueStore = (KeyValueStore) registry.lookup("KeyValueStore");
-
-            // Pre-populate the store with initial key-value pairs
-            prePopulateStore(keyValueStore);
-
-            // Perform at least 5 PUT operations
-            logger.info("Performing 5 PUT operations...");
-            logger.info(keyValueStore.put("hobby", "Cycling"));
-            logger.info(keyValueStore.put("language", "Java"));
-            logger.info(keyValueStore.put("course", "Distributed Systems"));
-            logger.info(keyValueStore.put("os", "Linux"));
-            logger.info(keyValueStore.put("city", "San Francisco"));
-
-            // Perform at least 5 GET operations
-            logger.info("\nPerforming 5 GET operations...");
-            logger.info("Value: " + keyValueStore.get("hobby"));
-            logger.info("Value: " + keyValueStore.get("language"));
-            logger.info("Value: " + keyValueStore.get("course"));
-            logger.info("Value: " + keyValueStore.get("os"));
-            logger.info("Value: " + keyValueStore.get("city"));
-
-            // Perform at least 5 DELETE operations
-            logger.info("\nPerforming 5 DELETE operations...");
-            logger.info(keyValueStore.delete("hobby"));
-            logger.info(keyValueStore.delete("language"));
-            logger.info(keyValueStore.delete("course"));
-            logger.info(keyValueStore.delete("os"));
-            logger.info(keyValueStore.delete("city"));
-
-            logger.info("\nAll operations completed successfully.");
-
-        } catch (Exception e) {
-            logger.info("Client exception: " + e.toString());
-            e.printStackTrace();
+        if (host == null || host.isEmpty()) {
+            throw new IllegalArgumentException("Environment variable SERVER_HOST is missing or empty.");
         }
+
+        KeyValueStoreClient client = new KeyValueStoreClient(host, port);
+        System.out.println("Connected to server at " + host + ":" + port);
+        client.testOperations();
+    } catch (IllegalArgumentException e) {
+        System.err.println("Configuration Error: " + e.getMessage());
+    } catch (Exception e) {
+        System.err.println("Client encountered an error: " + e.getMessage());
+        e.printStackTrace();
+    }
     }
 
-    private static void prePopulateStore(KeyValueStore keyValueStore) {
-        try {
-            logger.info("Pre-populating the key-value store with initial data...");
-            logger.info(keyValueStore.put("name", "Alice"));
-            logger.info(keyValueStore.put("age", "30"));
-            logger.info(keyValueStore.put("email", "alice@example.com"));
-            logger.info(keyValueStore.put("country", "USA"));
-            logger.info(keyValueStore.put("city", "New York"));
-            logger.info("Pre-population completed.\n");
-        } catch (Exception e) {
-            logger.info("Exception during pre-population: " + e.toString());
-            e.printStackTrace();
-        }
-    }
 }

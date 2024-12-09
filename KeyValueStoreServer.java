@@ -1,146 +1,266 @@
-import java.rmi.RemoteException;
-import java.rmi.registry.LocateRegistry;
-import java.rmi.registry.Registry;
-import java.rmi.server.UnicastRemoteObject;
-import java.util.Map;
-import java.util.concurrent.*;
+import java.net.InetAddress;
+import java.rmi.*;
+import java.rmi.registry.*;
+import java.rmi.server.*;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
-// New imports for replication and two-phase commit
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.concurrent.locks.ReentrantLock;
+public class KeyValueStoreServer extends UnicastRemoteObject implements KeyValueStoreInterface {
+    private final Map<String, String> store = new HashMap<>();
+    private final int serverId;
+    private final List<String> replicas;
+    private final AtomicInteger operationsToExecute = new AtomicInteger(0); // Track active operations
+    private final Timer shutdownCounter = new Timer(); // Timer for graceful shutdown
+    private int proposalCounter = 0;
+    private int highestPromised = 0;
+    private int highestProposalVal = 0;
+    private String acceptedVal = null;
+    private final Random random = new Random();
 
-public class KeyValueStoreServer extends UnicastRemoteObject implements KeyValueStore {
-    private static final LoggerUtility logger = new LoggerUtility();
-    private final Map<String, String> store;
-    private final ReentrantLock lock;
-    private final ExecutorService threadPool;
-
-    // Replication - List of replicas
-    private static final List<KeyValueStore> replicas = Collections.synchronizedList(new ArrayList<>());
-    private static final int TOTAL_REPLICAS = 5;
-
-    protected KeyValueStoreServer() throws RemoteException {
-        super();
-        this.store = new ConcurrentHashMap<>();
-        this.lock = new ReentrantLock(true);
-        this.threadPool = Executors.newFixedThreadPool(10); // Thread pool for better concurrency
+    public KeyValueStoreServer(int serverId, List<String> replicas) throws RemoteException {
+        this.serverId = serverId;
+        this.replicas = replicas;
+        checkForShutdown();
     }
+
+    private void checkForShutdown() {
+    shutdownCounter.schedule(new TimerTask() {
+        @Override
+        public void run() {
+            if (operationsToExecute.get() == 0) {
+                System.out.println("Server " + serverId + " shutting down gracefully due to inactivity.");
+                shutdownServer();
+            }
+        }
+    }, 30000, 30000); // Check every 30 seconds
+}
+
+private void shutdownServer() {
+    try {
+        UnicastRemoteObject.unexportObject(this, true);
+        shutdownCounter.cancel();
+        System.out.println("Server " + serverId + " stopped successfully.");
+    } catch (Exception e) {
+        System.err.println("Server " + serverId + " - Error during shutdown: " + e.getMessage());
+    }
+}
+
 
     @Override
     public String get(String key) throws RemoteException {
-        logger.info("Received GET request for key: " + key);
-        try {
-            if (store.containsKey(key)) {
-                String value = store.get(key);
-                logger.info("GET success for key: " + key + " -> Value: " + value);
-                return "Value: " + value;
-            } else {
-                logger.info("GET failed for key: " + key + " - Key not found");
-                return "Error: Key not found";
+        operationsToExecute.incrementAndGet();
+        System.out.println("Server " + serverId + " - GET operation: Key = " + key);
+        String result = store.getOrDefault(key, null);
+        operationsToExecute.decrementAndGet();
+        return result;
+    }
+
+    @Override
+    public boolean put(String key, String value) throws RemoteException {
+        operationsToExecute.incrementAndGet();
+        System.out.println("Server " + serverId + " - PUT operation: Key = " + key + ", Value = " + value);
+        boolean result = performRetries("PUT:" + key + ":" + value);
+        operationsToExecute.decrementAndGet();
+        return result;
+    }
+
+    @Override
+    public boolean delete(String key) throws RemoteException {
+        operationsToExecute.incrementAndGet();
+        System.out.println("Server " + serverId + " - DELETE operation: Key = " + key);
+        boolean result = performRetries("DELETE:" + key);
+        operationsToExecute.decrementAndGet();
+        return result;
+    }
+
+    private boolean performRetries(String operation) {
+        int retries = 5; // Retry up to 5 times
+        while (retries > 0) {
+            int proposalNumber = randomProposalGeneration(); // Incrementing proposal number
+            System.out.println("Server " + serverId + " - Starting Paxos for operation: " + operation
+                    + " with proposal: " + proposalNumber);
+
+            if (executePaxos(proposalNumber, operation)) {
+                System.out.println("Server " + serverId + " - Operation performed successfully: " + operation);
+                return true;
             }
-        } catch (Exception e) {
-            logger.info("Exception during GET request: " + e.toString());
-            throw new RemoteException("Exception during GET request", e);
+
+            System.out
+                    .println("Server " + serverId + " - Operation failed: " + operation + ". Retrying...");
+            retries--;
         }
+
+        System.out.println(
+                "Server " + serverId + " - Operation terminated, "+retries+" retries left: " + operation);
+        return false;
     }
 
-    @Override
-    public String put(String key, String value) throws RemoteException {
-        logger.info("Received PUT request for key: " + key + " with value: " + value);
-        return performTwoPhaseCommit("PUT", key, value);
+    private int randomProposalGeneration() {
+        proposalCounter++;
+        return proposalCounter * 1000 + serverId; // Ensures unique and incrementing proposal numbers
     }
 
-    @Override
-    public String delete(String key) throws RemoteException {
-        logger.info("Received DELETE request for key: " + key);
-        return performTwoPhaseCommit("DELETE", key, null);
-    }
-
-    // Method to perform Two-Phase Commit
-    private String performTwoPhaseCommit(String operation, String key, String value) throws RemoteException {
-        logger.info("Initiating Two-Phase Commit for operation: " + operation + " on key: " + key);
-
+    private boolean executePaxos(int proposalNumber, String operation) {
         // Phase 1: Prepare
-        for (KeyValueStore replica : replicas) {
+        int prepareAckCount = 0;
+        for (String replica : replicas) {
             try {
-                if ("PUT".equals(operation)) {
-                    logger.info("Preparing PUT on replica for key: " + key);
-                } else if ("DELETE".equals(operation)) {
-                    logger.info("Preparing DELETE on replica for key: " + key);
+                String[] parts = replica.split(":");
+                Registry registry = LocateRegistry.getRegistry(parts[0], Integer.parseInt(parts[1]));
+                KeyValueStoreInterface replicaStub = (KeyValueStoreInterface) registry.lookup("KeyValueStore");
+
+                if (replicaStub.prepare(proposalNumber, operation)) {
+                    prepareAckCount++;
                 }
             } catch (Exception e) {
-                logger.info("Replica preparation failed: " + e.getMessage());
-                return "Error: Replica preparation failed";
+                System.out.println(
+                        "Server " + serverId + " - Prepare failed for replica " + replica + ": " + e.getMessage());
             }
         }
 
-        // Phase 2: Commit
-        lock.lock();
-        try {
-            if ("PUT".equals(operation)) {
-                store.put(key, value);
-                logger.info("PUT committed for key: " + key + " with value: " + value);
-            } else if ("DELETE".equals(operation)) {
-                store.remove(key);
-                logger.info("DELETE committed for key: " + key);
-            }
+        System.out.println("Server " + serverId + " - Prepare phase completed. Acknowledgements: " + prepareAckCount);
 
-            // Notify replicas to commit
-            for (KeyValueStore replica : replicas) {
-                try {
-                    if ("PUT".equals(operation)) {
-                        logger.info("Committing PUT on replica for key: " + key);
-                    } else if ("DELETE".equals(operation)) {
-                        logger.info("Committing DELETE on replica for key: " + key);
-                    }
-                } catch (Exception e) {
-                    logger.info("Replica commit failed: " + e.getMessage());
+        if (prepareAckCount <= replicas.size() / 2) {
+            System.out.println("Server " + serverId + " - Prepare phase failed.");
+            return false;
+        }
+
+        // Phase 2: Accept
+        int acceptAckCount = 0;
+        for (String replica : replicas) {
+            try {
+                String[] parts = replica.split(":");
+                Registry registry = LocateRegistry.getRegistry(parts[0], Integer.parseInt(parts[1]));
+                KeyValueStoreInterface replicaStub = (KeyValueStoreInterface) registry.lookup("KeyValueStore");
+
+                if (replicaStub.accept(proposalNumber, operation)) {
+                    acceptAckCount++;
                 }
+            } catch (Exception e) {
+                System.out.println(
+                        "Server " + serverId + " - Accept failed for replica " + replica + ": " + e.getMessage());
             }
-
-        } finally {
-            lock.unlock();
         }
 
-        return "Success: " + operation + " completed for key: " + key;
+        System.out.println("Server " + serverId + " - Accept phase completed. Acknowledgements: " + acceptAckCount);
+
+        if (acceptAckCount <= replicas.size() / 2) {
+            System.out.println("Server " + serverId + " - Accept phase failed.");
+            return false;
+        }
+
+        // Phase 3: Learn
+        for (String replica : replicas) {
+            try {
+                String[] parts = replica.split(":");
+                Registry registry = LocateRegistry.getRegistry(parts[0], Integer.parseInt(parts[1]));
+                KeyValueStoreInterface replicaStub = (KeyValueStoreInterface) registry.lookup("KeyValueStore");
+
+                replicaStub.learn(operation);
+            } catch (Exception e) {
+                System.out.println(
+                        "Server " + serverId + " - Learn failed for replica " + replica + ": " + e.getMessage());
+            }
+        }
+
+        System.out.println("Server " + serverId + " - Learn phase completed.");
+        applyOperation(operation);
+        return true;
+    }
+
+    @Override
+    public boolean prepare(int proposalNumber, String operation) throws RemoteException {
+        synchronized (this) {
+            // Simulate random failure
+            if (random.nextDouble() < 0.3) { // 30% chance to fail
+                System.out.println("Server " + serverId + " - Simulating failure during Prepare phase for proposal: "
+                        + proposalNumber);
+                return false;
+            }
+
+            if (proposalNumber > highestPromised) {
+                highestPromised = proposalNumber;
+                System.out
+                        .println("Server " + serverId + " - Promise made for proposal: " + proposalNumber);
+                return true;
+            }
+
+            System.out.println("Server " + serverId + " - Rejected proposal: " + proposalNumber
+                    + " (Highest Promised: " + highestPromised + ")");
+            return false;
+        }
+    }
+
+    @Override
+    public boolean accept(int proposalNumber, String operation) throws RemoteException {
+        synchronized (this) {
+            // Simulate random failure
+            if (random.nextDouble() < 0.3) { // 30% chance to fail
+                System.out.println("Server " + serverId + " - Simulating failure during Accept phase for proposal: "
+                        + proposalNumber);
+                return false;
+            }
+
+            if (proposalNumber >= highestPromised) {
+                highestPromised = proposalNumber;
+                highestProposalVal = proposalNumber;
+                acceptedVal = operation;
+                System.out.println("Server " + serverId + " - Accepted proposal: " + proposalNumber);
+                return true;
+            }
+
+            System.out.println("Server " + serverId + " - Rejected proposal: " + proposalNumber
+                    + " (Highest Promised: " + highestPromised + ")");
+            return false;
+        }
+    }
+
+    @Override
+    public void learn(String operation) throws RemoteException {
+        applyOperation(operation);
+    }
+
+    private void applyOperation(String operation) {
+        String[] parts = operation.split(":");
+        String type = parts[0];
+        String key = parts[1];
+        String value = parts.length > 2 ? parts[2] : null;
+
+        synchronized (this) {
+            switch (type) {
+                case "PUT":
+                    store.put(key, value);
+                    System.out.println("Server " + serverId + " - Key added: " + key + " = " + value);
+                    break;
+                case "DELETE":
+                    store.remove(key);
+                    System.out.println("Server " + serverId + " - Key deleted: " + key);
+                    break;
+            }
+        }
     }
 
     public static void main(String[] args) {
         try {
-            KeyValueStoreServer keyValueStore = new KeyValueStoreServer();
+            String host = InetAddress.getLocalHost().getHostName();
+            int port = Integer.parseInt(System.getenv("PORT"));
+            int serverId = Integer.parseInt(System.getenv("SERVER_ID"));
+            String replicas = System.getenv("REPLICAS");
 
-            // Try to create a new registry on port `1099`
-            Registry registry;
-            try {
-                registry = LocateRegistry.createRegistry(1099);
-                logger.info("RMI registry created on port 1099.");
-            } catch (java.rmi.server.ExportException e) {
-                // If the registry is already running, get the existing one
-                registry = LocateRegistry.getRegistry(1099);
-                logger.info("Using existing RMI registry on port 1099.");
-            }
+            List<String> replica = parsereplicas(replicas);
 
-            // Bind the remote object
-            registry.rebind("KeyValueStore", keyValueStore);
-            logger.info("Server is ready.");
+            KeyValueStoreServer server = new KeyValueStoreServer(serverId, replica);
+            LocateRegistry.createRegistry(port);
+            Naming.rebind("//" + host + ":" + port + "/KeyValueStore", server);
 
-            // Initialize replicas
-            for (int i = 0; i < TOTAL_REPLICAS; i++) {
-                replicas.add(new KeyValueStoreServer());
-                logger.info("Replica " + i + " initialized.");
-            }
-
-            // Shutdown hook for the server
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                logger.info("Shutting down server...");
-                keyValueStore.threadPool.shutdown();
-            }));
-
+            System.out.println("KeyValueStoreServer started on " + host + ":" + port);
         } catch (Exception e) {
-            logger.info("Server exception: " + e.toString());
+            System.out.println("Error starting server: " + e.getMessage());
             e.printStackTrace();
         }
+    }
+
+    private static List<String> parsereplicas(String replicas) {
+        return replicas == null || replicas.isEmpty() ? new ArrayList<>() : Arrays.asList(replicas.split(","));
     }
 }
